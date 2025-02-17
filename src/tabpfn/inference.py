@@ -184,14 +184,12 @@ class InferenceEngineOnDemand(InferenceEngine):
                 X_full = X_full.type(self.force_inference_dtype)
                 y_train = y_train.type(self.force_inference_dtype)  # type: ignore  # noqa: PLW2901
 
-            style = None
-
             with (
                 torch.autocast(device.type, enabled=autocast),
                 torch.inference_mode(),
             ):
                 output = self.model(
-                    *(style, X_full, y_train),
+                    *(X_full, y_train),
                     only_return_standard_out=only_return_standard_out,
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
@@ -323,14 +321,12 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
                 safety_factor=1.2,  # TODO(Arjun): make customizable
             )
 
-            style = None
-
             with (
                 torch.autocast(device.type, enabled=autocast),
                 torch.inference_mode(),
             ):
                 output = self.model(
-                    *(style, X_full, y_train),
+                    *(X_full, y_train),
                     only_return_standard_out=only_return_standard_out,
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
@@ -430,7 +426,7 @@ class InferenceEngineCacheKV(InferenceEngine):
                 torch.inference_mode(),
             ):
                 ens_model.forward(
-                    *(None, X, y),
+                    *(X, y),
                     only_return_standard_out=only_return_standard_out,
                     categorical_inds=preprocessor_cat_ix,
                     single_eval_pos=len(X),
@@ -484,7 +480,6 @@ class InferenceEngineCacheKV(InferenceEngine):
             )
 
             model = model.to(device)  # noqa: PLW2901
-            style = None
 
             if self.force_inference_dtype is not None:
                 model = model.type(self.force_inference_dtype)  # noqa: PLW2901
@@ -495,7 +490,7 @@ class InferenceEngineCacheKV(InferenceEngine):
                 torch.inference_mode(),
             ):
                 output = model(
-                    *(style, X_test, None),
+                    *(X_test, None),
                     only_return_standard_out=only_return_standard_out,
                     categorical_inds=cat_ix,
                     single_eval_pos=None,

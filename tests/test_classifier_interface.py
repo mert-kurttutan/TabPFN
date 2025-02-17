@@ -238,7 +238,6 @@ class ModelWrapper(nn.Module):
         categorical_inds,
     ):
         return self.model(
-            None,
             X,
             y,
             single_eval_pos=single_eval_pos,

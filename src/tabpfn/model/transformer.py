@@ -352,7 +352,6 @@ class PerFeatureTransformer(nn.Module):
 
         - `model((x,y), **kwargs)`
         - `model(train_x, train_y, test_x, **kwargs)`
-        - `model((style,x,y), **kwargs)`
 
         Args:
             train_x: torch.Tensor | None
@@ -365,8 +364,6 @@ class PerFeatureTransformer(nn.Module):
                 The input data.
             y: torch.Tensor | None
                 The target data.
-            style: torch.Tensor | None
-                The style vector.
             single_eval_pos: int
                 The position to evaluate at.
             only_return_standard_out: bool
@@ -386,7 +383,6 @@ class PerFeatureTransformer(nn.Module):
 
         supported_kwargs = {
             "only_return_standard_out",
-            "style",
             "data_dags",
             "categorical_inds",
             "freeze_kv",
@@ -411,10 +407,6 @@ class PerFeatureTransformer(nn.Module):
             x, y = args
             return self._forward(x, y, **kwargs)
 
-        if len(args) == 3:
-            style, x, y = args
-            return self._forward(x, y, style=style, **kwargs)
-
         raise ValueError("Unrecognized input. Please follow the doc string.")
 
     def _forward(  # noqa: PLR0912, C901
@@ -426,7 +418,6 @@ class PerFeatureTransformer(nn.Module):
         *,
         single_eval_pos: int | None = None,
         only_return_standard_out: bool = True,
-        style: torch.Tensor | None = None,
         data_dags: list[Any] | None = None,
         categorical_inds: list[int] | None = None,
         half_layers: bool = False,
@@ -439,7 +430,6 @@ class PerFeatureTransformer(nn.Module):
             single_eval_pos:
                 The position to evaluate at. If `None`, evaluate at all positions.
             only_return_standard_out: Whether to only return the standard output.
-            style: The style vector.
             data_dags: The data DAGs for each example in the batch.
             categorical_inds: The indices of categorical features.
             half_layers: Whether to use half the layers.
@@ -447,7 +437,6 @@ class PerFeatureTransformer(nn.Module):
         Returns:
             A dictionary of output tensors.
         """
-        assert style is None
         if self.cache_trainset_representation:
             if not single_eval_pos:  # none or 0
                 assert y is None
