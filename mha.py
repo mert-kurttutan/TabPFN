@@ -133,7 +133,7 @@ class MultiHeadAttention(torch.nn.Module):
         assert_tensor_shape(w_v, [self._nhead_kv, self._d_v, self._input_size])
         assert_tensor_shape(w_kv, [2, self._nhead_kv, self._d_k, self._input_size])
         assert_tensor_shape(w_qkv, [3, self._nhead, self._d_k, self._input_size])
-        assert_tensor_shape(w_out, [self._nhead, self._d_k, self._output_size])
+        assert_tensor_shape(w_out, [self._nhead, self._d_v, self._output_size])
 
         self.register_parameter("_w_out", w_out)
         self.register_parameter("_w_q", w_q)
@@ -253,7 +253,7 @@ class MultiHeadAttention(torch.nn.Module):
                         dtype=dtype,
                     )
                     w_v = self.newly_initialized_input_weight(
-                        [self._nhead_kv, self._d_k, self._input_size],
+                        [self._nhead_kv, self._d_v, self._input_size],
                         nhead=self._nhead,
                         device=device,
                         dtype=dtype,
@@ -277,19 +277,12 @@ class MultiHeadAttention(torch.nn.Module):
         self,
         x: torch.Tensor,
         x_kv: torch.Tensor | None = None,
-        *,
         cache_kv: bool = False,
-        add_input: bool = False,
-        # Indicates that 'x' is not used after the call and its buffer can be reused
-        # for the output. The operation is not guaranteed to be inplace.
-        allow_inplace: bool = False,
-        # This requires 'add_input' and 'allow_inplace'. See the documentation of
-        # the decorator 'support_save_peak_mem_factor' for details.
-        save_peak_mem_factor: int | None = None,
         reuse_first_head_kv: bool = False,
         only_cache_first_head_kv: bool = False,
         use_cached_kv: bool = False,
         use_second_set_of_queries: bool = False,
+        add_input: bool = False,
     ):
         """X is the current hidden and has a shape of [batch, ..., seq_len, input_size].
         If keys and values are present in the cache and 'freeze_kv' is not set, they
@@ -360,11 +353,9 @@ class MultiHeadAttention(torch.nn.Module):
             self._kv_cache,
             cache_kv=cache_kv,
             use_cached_kv=use_cached_kv,
-            add_input=add_input,
-            allow_inplace=allow_inplace,
-            save_peak_mem_factor=save_peak_mem_factor,
             reuse_first_head_kv=reuse_first_head_kv,
             use_second_set_of_queries=use_second_set_of_queries,
+            add_input=add_input,
         )
         return output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
 
@@ -427,36 +418,28 @@ class MultiHeadAttention(torch.nn.Module):
             and k is None
             and v is None
         ):
-            # qkv = torch.einsum("... s, j h d s -> ... j h d", x, self._w_qkv)
-            batch_size, seqlen_q, input_size = x.shape
-            x = x.reshape(-1, input_size)
-            nhead, d_k, d_v, input_size = self._w_qkv.shape
-            w_qkv = self._w_qkv.reshape(-1, input_size)
-            qkv = torch.matmul(x, w_qkv.T)
-            qkv = qkv.reshape(batch_size, seqlen_q, nhead, d_k, d_v)
+            qkv = torch.einsum("... s, j h d s -> ... j h d", x, self._w_qkv)
             q = None
         else:
             qkv = None
             # q = torch.einsum("... s, h d s -> ... h d", x, w_q)
-            batch_size, seqlen, input_size = x.shape
-            x = x.reshape(-1, input_size)
-            nhead, d_k, input_size = w_q.shape
-            w_q = w_q.reshape(-1, input_size)
+            batch_size, seqlen, input_dim = x.shape
+            q_last_dim = x.shape[-1]
+            x = x.reshape(-1, q_last_dim)
+            nhead, d_k, input_dim = w_q.shape
+            w_q = w_q.reshape(-1, input_dim)
             q = torch.matmul(x, w_q.T)
             q = q.reshape(batch_size, seqlen, nhead, d_k)
+
+
+
 
         if kv is None and k is None and v is None and qkv is None:
             if w_kv is not None:
                 if reuse_first_head_kv:
                     orig_num_heads = w_kv.shape[1]
                     w_kv = w_kv[:, :1]
-                # kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, w_kv)
-                batch_size, seqlen_kv, input_size = x_kv.shape
-                x_kv = x_kv.reshape(-1, input_size)
-                nhead_kv, d_k, d_v, input_size = w_kv.shape
-                w_kv = w_kv.reshape(-1, input_size)
-                kv = torch.matmul(x_kv, w_kv.T)
-                kv = kv.reshape(batch_size, seqlen_kv, nhead_kv, d_k, d_v)
+                kv = torch.einsum("... s, j h d s -> ... j h d", x_kv, w_kv)
                 if reuse_first_head_kv:
                     expand_shape = [-1 for _ in kv.shape]
                     expand_shape[-2] = orig_num_heads
@@ -468,18 +451,8 @@ class MultiHeadAttention(torch.nn.Module):
                     orig_num_heads = w_k.shape[0]
                     w_k = w_k[:1]
                     w_v = w_v[:1]
-                # k = torch.einsum("... s, h d s -> ... h d", x_kv, w_k)
-                batch_size, seqlen_kv, input_size = x_kv.shape
-                x_kv = x_kv.reshape(-1, input_size)
-                nhead_kv, d_k, input_size = w_k.shape
-                w_k = w_k.reshape(-1, input_size)
-                k = torch.matmul(x_kv, w_k.T) * (-1.0)
-                k = k.reshape(batch_size, seqlen_kv, nhead_kv, d_k)
-                # v = torch.einsum("... s, h d s -> ... h d", x_kv, w_v)
-                nhead_kv, d_v, input_size = w_v.shape
-                w_v = w_v.reshape(-1, input_size)
-                v = torch.matmul(x_kv, w_v.T)
-                v = v.reshape(batch_size, seqlen_kv, nhead_kv, d_v)
+                k = torch.einsum("... s, h d s -> ... h d", x_kv, w_k)
+                v = torch.einsum("... s, h d s -> ... h d", x_kv, w_v)
                 if reuse_first_head_kv:
                     expand_shape = [-1 for _ in k.shape]
                     expand_shape[-2] = orig_num_heads
@@ -501,7 +474,6 @@ class MultiHeadAttention(torch.nn.Module):
 
         return q, k, v, kv, qkv
 
-    @support_save_peak_mem_factor  # type: ignore
     def _compute(
         self,
         x: torch.Tensor,
@@ -509,11 +481,11 @@ class MultiHeadAttention(torch.nn.Module):
         k_cache: torch.Tensor | None,
         v_cache: torch.Tensor | None,
         kv_cache: torch.Tensor | None,
-        *,
         cache_kv: bool,
         use_cached_kv: bool,
         reuse_first_head_kv: bool,
         use_second_set_of_queries: bool,
+        add_input = False,
     ) -> torch.Tensor:
         """Attention computation.
         Called by 'forward', potentially on shards, once shapes have been normalized.
@@ -538,32 +510,29 @@ class MultiHeadAttention(torch.nn.Module):
             self.dropout_p,
             self.softmax_scale,
         )
+
         # y = torch.einsum(
         #     "... h d, h d s -> ... s",
         #     attention_head_outputs,
         #     self._w_out,
         # )
-
+        # write above in terms of matmul
         batch_size, seqlen, nhead, d_v = attention_head_outputs.shape
         nhead, d_v, output_size = self._w_out.shape
-        attention_head_outputs = attention_head_outputs.reshape(
-            -1,
-            nhead * d_v,
-        ).contiguous()
-        wout = self._w_out.reshape(
-            nhead * d_v,
-            output_size,
-        ).contiguous()
+        attention_head_outputs = attention_head_outputs.reshape(-1, nhead*d_v).contiguous()
+        wout = self._w_out.reshape(nhead*d_v, output_size).contiguous()
         y = torch.matmul(attention_head_outputs, wout)
-        return y.reshape(batch_size, seqlen, output_size)
+        y = y.reshape(batch_size, seqlen, output_size)
+
+        if add_input:
+            y += x
+        return y
 
     def _rearrange_inputs_to_flat_batch(
         self,
         x: torch.Tensor,
         x_kv: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Size]:
-        # TODO: This presumably creates potential memory overhead not captured
-        # by save_peak_mem_factor.
         x_shape_after_transpose = x.shape
         if x_kv is not None:
             assert x.shape[:-2] == x_kv.shape[:-2]
@@ -759,14 +728,14 @@ class MultiHeadAttention(torch.nn.Module):
         else:
             k = MultiHeadAttention.broadcast_kv_across_heads(k, share_kv_across_n_heads)
             v = MultiHeadAttention.broadcast_kv_across_heads(v, share_kv_across_n_heads)
-            # logits = torch.einsum("b q h d, b k h d -> b q k h", q, k)
             q = q.transpose(-2, -3)
             k = k.transpose(-2, -3)
             q = q.reshape(-1, seqlen_q, d_k)
-            k = k.reshape(-1, seqlen_kv, d_k)
+            k = k.reshape(-1, seqlen_q, d_k)
             logits = torch.bmm(q, k.transpose(-2, -1))
-            logits = logits.reshape(batch_size, nhead, seqlen_q, seqlen_kv)
-            logits = logits.transpose(-3, -1).transpose(-3, -2)
+            logits = logits.reshape(batch_size, nhead, seqlen_q, seqlen_q)
+            logits = logits.transpose(-3, -1).transpose(-3,-2)
+            # logits = torch.einsum("b q h d, b k h d -> b q k h", q, k)
             logits *= (
                 torch.sqrt(torch.tensor(1.0 / d_k)).to(k.device)
                 if softmax_scale is None
@@ -774,20 +743,14 @@ class MultiHeadAttention(torch.nn.Module):
             )
             ps = torch.softmax(logits, dim=2)
             ps = torch.dropout(ps, dropout_p, train=True)
-            # attention_head_outputs = torch.einsum(
-            # "b q k h, b k h d -> b q h d", ps, v)
             ps = ps.transpose(-1, -3).transpose(-2, -1)
-            ps = ps.reshape(-1, seqlen_q, seqlen_kv)
+            ps = ps.reshape(-1, seqlen_q, seqlen_q)
             v = v.transpose(-2, -3)
-            v = v.reshape(-1, seqlen_kv, d_v)
+            v = v.reshape(-1, seqlen_q, d_v)
             attention_head_outputs = torch.bmm(ps, v)
-            attention_head_outputs = attention_head_outputs.reshape(
-                batch_size,
-                nhead,
-                seqlen_q,
-                d_v,
-            )
+            attention_head_outputs = attention_head_outputs.reshape(batch_size, nhead, seqlen_q, d_v)
             attention_head_outputs = attention_head_outputs.transpose(-2, -3)
+
 
         return attention_head_outputs.reshape(
             batch_size,
@@ -823,3 +786,152 @@ class MultiHeadAttention(torch.nn.Module):
             state_dict["_w_qkv"] = in_proj_weight
         state_dict["_w_out"] = out_proj_weight.T.reshape(nhead, -1, embed_dim)
         return state_dict
+
+def run_mha1(
+    batch_size = 5,
+    input_size = 13,
+    output_size = 17,
+    seq_len = 21,
+    d_k = 9,
+    d_v = 11,
+    n_head = 3,
+
+):
+    RANDOM_SEED = 42
+    # test multi head attention
+    import torch
+    x = torch.randn(batch_size, seq_len, input_size)
+    x_c = x.detach().clone()
+    x_kv = None
+    # set seed for reproducibility
+    torch.manual_seed(RANDOM_SEED)
+    mha = MultiHeadAttention(
+        input_size=input_size,
+        output_size=output_size,
+        d_k=d_k,
+        d_v=d_v,
+        nhead=n_head,
+        device=None,
+        dtype=None,
+        share_kv_across_n_heads=1,
+        dropout_p=None,
+        softmax_scale=None,
+        initialize_output_to_zero=False,
+        precomputed_k=None,
+        precomputed_v=None,
+        precomputed_kv=None,
+        recompute=False,
+        init_gain=1.0,
+        two_sets_of_queries=False,
+    )
+    y = mha(x, x_kv, add_input=False)
+    print(f"y.shape: {y.shape}")
+
+
+def run_mha2():
+    RANDOM_SEED = 42
+    # test multi head attention
+    batch_size = 5
+    input_size = 13
+    output_size = 17
+    seq_len = 21
+    d_k = 9
+    d_v = 11
+    n_head = 3
+    import torch
+    x = torch.randn(batch_size, seq_len, input_size)
+    x_c = x.detach().clone()
+    x_kv = None
+    # set seed for reproducibility
+    torch.manual_seed(RANDOM_SEED)
+    mha = MultiHeadAttention(
+        input_size=input_size,
+        output_size=output_size,
+        d_k=d_k,
+        d_v=d_v,
+        nhead=n_head,
+        device=None,
+        dtype=None,
+        share_kv_across_n_heads=1,
+        dropout_p=None,
+        softmax_scale=None,
+        initialize_output_to_zero=False,
+        precomputed_k=None,
+        precomputed_v=None,
+        precomputed_kv=None,
+        recompute=False,
+        init_gain=1.0,
+        two_sets_of_queries=False,
+    )
+    y = mha(x, x_kv, add_input=False)
+
+    print(f"y.shape: {y.shape}")
+
+if __name__ == "__main__":
+    RANDOM_SEED = 42
+    # test multi head attention
+    batch_size = 5
+    input_size = 13
+    output_size = 17
+    seq_len = 21
+    d_k = 9
+    d_v = 11
+    n_head = 3
+    import torch
+    x = torch.randn(batch_size, seq_len, input_size)
+    x_c = x.detach().clone()
+    x_kv = None
+    # set seed for reproducibility
+    torch.manual_seed(RANDOM_SEED)
+    mha = MultiHeadAttention(
+        input_size=input_size,
+        output_size=output_size,
+        d_k=d_k,
+        d_v=d_v,
+        nhead=n_head,
+        device=None,
+        dtype=None,
+        share_kv_across_n_heads=1,
+        dropout_p=None,
+        softmax_scale=None,
+        initialize_output_to_zero=False,
+        precomputed_k=None,
+        precomputed_v=None,
+        precomputed_kv=None,
+        recompute=False,
+        init_gain=1.0,
+        two_sets_of_queries=False,
+    )
+    y = mha(x, x_kv, add_input=False)
+    print(y.shape)
+    # from tabpfn.model.multi_head_attention import MultiHeadAttention
+    from tabpfn.model import multi_head_attention
+    # set seed for reproducibility
+    torch.manual_seed(RANDOM_SEED)
+    mha2 = multi_head_attention.MultiHeadAttention(
+        input_size=input_size,
+        output_size=output_size,
+        d_k=d_k,
+        d_v=d_v,
+        nhead=n_head,
+        device=None,
+        dtype=None,
+        share_kv_across_n_heads=1,
+        dropout_p=None,
+        softmax_scale=None,
+        initialize_output_to_zero=False,
+        precomputed_k=None,
+        precomputed_v=None,
+        precomputed_kv=None,
+        recompute=False,
+        init_gain=1.0,
+        two_sets_of_queries=False,
+    )
+    y2 = mha2(x_c, x_kv, add_input=False)
+    print(y2.shape)
+    # print indiviual element of y and y2 side by side, for 10 scalar lements
+    assert torch.allclose(y, y2, atol=1e-7), "y and y2 not equal"
+
+    print("Done")
+
+

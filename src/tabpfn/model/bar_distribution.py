@@ -355,7 +355,12 @@ class BarDistribution(nn.Module):
         ) / bucket_diffs
 
         p = torch.softmax(logits, -1)
-        return torch.einsum("...b,...b->...", p, bucket_contributions)
+        # return torch.einsum("...b,...b->...", p, bucket_contributions)
+        b_dim = p.shape[-1]
+        p_dim_rest = p.shape[:-1]
+        p = p.reshape(-1, 1, b_dim)
+        bucket_contributions = bucket_contributions.reshape(-1, 1, b_dim)
+        return torch.bmm(p, bucket_contributions).reshape(*p_dim_rest)
 
     def pi(
         self,

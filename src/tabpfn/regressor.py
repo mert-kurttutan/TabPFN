@@ -746,8 +746,8 @@ def _logits_to_output(
         return [criterion.icdf(logits, q).cpu().detach().numpy() for q in quantiles]
 
     # TODO: support
-    #   "pi": criterion.pi(logits, np.max(self.y)), # noqa: ERA001
-    #   "ei": criterion.ei(logits), # noqa: ERA001
+    #   "pi": criterion.pi(logits, np.max(self.y)),
+    #   "ei": criterion.ei(logits),
     if output_type == "mean":
         output = criterion.mean(logits)
     elif output_type == "median":
