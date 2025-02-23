@@ -1,0 +1,2 @@
+num_samples,num_features,num_classes,train_time,predict_time
+100,100,2,0.22587871551513672,3.7436697483062744
